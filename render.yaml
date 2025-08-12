@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: iplan-mcp-server
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    plan: free
+    region: oregon
+    envVars:
+      - key: NODE_ENV
+        value: production
+    healthCheckPath: /
