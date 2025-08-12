@@ -76,29 +76,71 @@ class IplanMCPServer {
             });
         });
 
+        // Test MCP tools endpoint
+        this.app.get('/test', async (req, res) => {
+            try {
+                const testResult = await this.checkServiceStatus();
+                res.json({
+                    status: 'MCP server working',
+                    test: 'check_service_status completed',
+                    result: testResult
+                });
+            } catch (error) {
+                res.status(500).json({
+                    status: 'MCP server error',
+                    error: error.message
+                });
+            }
+        });
+
         // SSE endpoint for n8n MCP Client Tool
         this.app.use('/sse', (req, res, next) => {
-            // Set SSE headers
+            // Set proper SSE headers
             res.writeHead(200, {
                 'Content-Type': 'text/event-stream',
                 'Cache-Control': 'no-cache',
                 'Connection': 'keep-alive',
                 'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Headers': 'Cache-Control'
+                'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
+                'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
             });
 
-            const transport = new SSEServerTransport('/sse', res);
-            
-            // Connect the MCP server to the SSE transport
-            this.server.connect(transport).catch(error => {
-                console.error('SSE connection error:', error);
+            // Handle preflight requests
+            if (req.method === 'OPTIONS') {
                 res.end();
-            });
+                return;
+            }
 
-            // Handle client disconnect
-            req.on('close', () => {
-                console.log('SSE client disconnected');
-            });
+            console.log('New SSE connection established');
+            
+            try {
+                const transport = new SSEServerTransport('', res);
+                
+                // Connect the MCP server to the SSE transport
+                this.server.connect(transport).catch(error => {
+                    console.error('SSE connection error:', error);
+                    if (!res.headersSent) {
+                        res.writeHead(500, {'Content-Type': 'text/plain'});
+                        res.end('Connection failed');
+                    }
+                });
+
+                // Handle client disconnect
+                req.on('close', () => {
+                    console.log('SSE client disconnected');
+                });
+
+                req.on('error', (error) => {
+                    console.error('SSE request error:', error);
+                });
+
+            } catch (error) {
+                console.error('SSE setup error:', error);
+                if (!res.headersSent) {
+                    res.writeHead(500, {'Content-Type': 'text/plain'});
+                    res.end('Setup failed');
+                }
+            }
         });
 
         // Error handling
