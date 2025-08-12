@@ -16,6 +16,7 @@ class IplanMCPServer {
     httpServer;
 
     constructor() {
+        // יצירת שרת MCP
         this.server = new Server({
             name: 'iplan-israel-planning',
             version: '1.0.0',
@@ -24,179 +25,143 @@ class IplanMCPServer {
                 tools: {}
             }
         });
+        
         this.setupToolHandlers();
         this.setupExpressApp();
     }
 
     setupExpressApp() {
         this.app = express();
+        
+        // CORS - להתאימות טובה יותר
         this.app.use(cors({
             origin: '*',
             methods: ['GET', 'POST', 'OPTIONS'],
-            allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+            allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Cache-Control'],
             credentials: false
         }));
-        this.app.use(express.json());
         
+        this.app.use(express.json({ limit: '10mb' }));
+        this.app.use(express.urlencoded({ extended: true }));
+
         // Health check endpoint
         this.app.get('/', (req, res) => {
             res.json({ 
                 status: 'running', 
                 server: 'Iplan MCP Server',
                 version: '1.0.0',
-                protocols: ['stdio', 'sse'],
-                endpoints: {
-                    health: '/',
-                    sse: '/sse',
-                    info: '/info'
-                },
-                tools: [
-                    'search_plans',
-                    'get_plan_details', 
-                    'search_by_location',
-                    'get_building_restrictions',
-                    'get_infrastructure_data',
-                    'get_conservation_sites',
-                    'get_comprehensive_location_data',
-                    'check_service_status'
-                ]
-            });
-        });
-
-        // Server info endpoint
-        this.app.get('/info', (req, res) => {
-            res.json({
-                name: 'iplan-israel-planning',
-                version: '1.0.0',
                 description: 'שרת MCP למינהל התכנון הישראלי',
-                capabilities: {
-                    tools: {}
-                },
-                protocolVersion: '2024-11-05'
+                mcp_endpoint: '/sse',
+                test_endpoint: '/test',
+                tools_count: 4
             });
         });
 
-        // Test MCP tools endpoint
+        // Test endpoint
         this.app.get('/test', async (req, res) => {
             try {
-                const testResult = await this.checkServiceStatus();
+                console.log('Test endpoint called');
+                
+                // בדיקה מהירה של שירות התכנון
+                const testUrl = `${BASE_URL}/PlanningPublic/Xplan/MapServer?f=json`;
+                const response = await fetch(testUrl, {
+                    method: 'GET',
+                    timeout: 10000
+                });
+                
+                const isServiceUp = response.ok;
+                
                 res.json({
-                    status: 'MCP server working',
-                    test: 'check_service_status completed',
-                    result: testResult
+                    mcp_server: 'running',
+                    iplan_service: isServiceUp ? 'available' : 'unavailable',
+                    test_time: new Date().toISOString(),
+                    tools: ['search_plans', 'get_plan_details', 'search_by_location', 'check_service_status']
                 });
             } catch (error) {
                 res.status(500).json({
-                    status: 'MCP server error',
+                    mcp_server: 'running',
+                    iplan_service: 'error',
                     error: error.message
                 });
             }
         });
 
-        // SSE endpoint for n8n MCP Client Tool
+        // **נקודת ה-SSE הנכונה - זה הלב של MCP**
         this.app.use('/sse', (req, res, next) => {
-            // Handle preflight requests
-            if (req.method === 'OPTIONS') {
-                res.writeHead(200, {
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
-                    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
-                });
-                res.end();
-                return;
-            }
-
-            console.log('New SSE connection established');
+            console.log(`SSE request: ${req.method} ${req.url}`);
             
+            // הטמעת SSE Transport נכונה
             try {
-                // Let SSEServerTransport handle all headers
-                const transport = new SSEServerTransport('', res);
+                // יצירת SSE Transport עם Response object
+                const transport = new SSEServerTransport('/sse', res);
                 
-                // Connect the MCP server to the SSE transport
+                // חיבור שרת MCP ל-Transport
                 this.server.connect(transport).then(() => {
-                    console.log('SSE connection successful');
+                    console.log('✅ MCP Server connected successfully via SSE');
                 }).catch(error => {
-                    console.error('SSE connection error:', error);
+                    console.error('❌ MCP Server connection failed:', error);
                 });
 
-                // Handle client disconnect
+                // Event handlers לניהול החיבור
                 req.on('close', () => {
-                    console.log('SSE client disconnected');
+                    console.log('🔌 SSE client disconnected');
                 });
 
                 req.on('error', (error) => {
-                    console.error('SSE request error:', error);
+                    console.error('⚠️ SSE request error:', error);
                 });
 
+                // SSE Transport יטפל בכל השאר
+                
             } catch (error) {
-                console.error('SSE setup error:', error);
+                console.error('💥 SSE setup error:', error);
                 if (!res.headersSent) {
-                    res.writeHead(500, {'Content-Type': 'text/plain'});
-                    res.end('Setup failed');
+                    res.status(500).json({
+                        error: 'SSE setup failed',
+                        message: error.message
+                    });
                 }
             }
         });
 
-        // Error handling
+        // Error handler
         this.app.use((error, req, res, next) => {
             console.error('Express error:', error);
-            res.status(500).json({
-                error: 'Internal server error',
-                message: error.message
-            });
+            if (!res.headersSent) {
+                res.status(500).json({
+                    error: 'Internal server error',
+                    message: error.message
+                });
+            }
         });
     }
 
     setupToolHandlers() {
+        // רשימת הכלים
         this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+            console.log('📋 Tools list requested');
             return {
                 tools: [
                     {
                         name: 'search_plans',
-                        description: 'חיפוש תכניות במינהל התכנון הישראלי עם פילטרים מתקדמים',
+                        description: 'חיפוש תכניות במינהל התכנון הישראלי עם פילטרים',
                         inputSchema: {
                             type: 'object',
                             properties: {
                                 searchTerm: {
                                     type: 'string',
-                                    description: 'שם או מספר תכנית לחיפוש'
+                                    description: 'מילת חיפוש (שם תכנית או מספר)'
                                 },
                                 district: {
                                     type: 'string',
-                                    description: 'מחוז (תל אביב, ירושלים, חיפה, מחוז הצפון, מחוז המרכז, מחוז הדרום)'
-                                },
-                                minArea: {
-                                    type: 'number',
-                                    description: 'שטח מינימלי בדונמים'
-                                },
-                                maxArea: {
-                                    type: 'number',
-                                    description: 'שטח מקסימלי בדונמים'
-                                },
-                                planAreaName: {
-                                    type: 'string',
-                                    description: 'אזור תכנית פנימי (לדוגמה: ירושלים מערב)'
-                                },
-                                cityName: {
-                                    type: 'string',
-                                    description: 'שם עיר או אזור סמכות (לדוגמה: עיריית תל אביב)'
-                                },
-                                landUse: {
-                                    type: 'string',
-                                    description: 'ייעוד קרקע (מגורים, מסחר, תעשיה, וכו\')'
-                                },
-                                minDate: {
-                                    type: 'string',
-                                    description: 'תאריך אישור מינימלי (YYYY-MM-DD)'
-                                },
-                                maxDate: {
-                                    type: 'string',
-                                    description: 'תאריך אישור מקסימלי (YYYY-MM-DD)'
+                                    description: 'מחוז (תל אביב, ירושלים, חיפה, צפון, מרכז, דרום)'
                                 },
                                 limit: {
                                     type: 'number',
-                                    description: 'מספר מקסימלי של תוצאות (ברירת מחדל: 50)',
-                                    default: 50
+                                    description: 'מספר מקסימלי של תוצאות (1-20)',
+                                    minimum: 1,
+                                    maximum: 20,
+                                    default: 10
                                 }
                             }
                         }
@@ -209,7 +174,7 @@ class IplanMCPServer {
                             properties: {
                                 planNumber: {
                                     type: 'string',
-                                    description: 'מספר התכנית הרשמי'
+                                                        description: 'מספר התכנית הרשמי (לדוגמה: תא/2500)'
                                 }
                             },
                             required: ['planNumber']
@@ -223,107 +188,17 @@ class IplanMCPServer {
                             properties: {
                                 x: {
                                     type: 'number',
-                                    description: 'קואורדינטת X (מערכת ישראל TM)'
+                                    description: 'קואורדינטת X במערכת ישראל TM'
                                 },
                                 y: {
                                     type: 'number',
-                                    description: 'קואורדינטת Y (מערכת ישראל TM)'
+                                    description: 'קואורדינטת Y במערכת ישראל TM'
                                 },
                                 radius: {
                                     type: 'number',
-                                    description: 'רדיוס חיפוש במטרים (ברירת מחדל: 500)',
-                                    default: 500
-                                }
-                            },
-                            required: ['x', 'y']
-                        }
-                    },
-                    {
-                        name: 'get_building_restrictions',
-                        description: 'קבלת הגבלות בנייה לפי מיקום',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                x: {
-                                    type: 'number',
-                                    description: 'קואורדינטת X'
-                                },
-                                y: {
-                                    type: 'number',
-                                    description: 'קואורדינטת Y'
-                                },
-                                buffer: {
-                                    type: 'number',
-                                    description: 'רדיוס חיפוש במטרים',
-                                    default: 100
-                                }
-                            },
-                            required: ['x', 'y']
-                        }
-                    },
-                    {
-                        name: 'get_infrastructure_data',
-                        description: 'קבלת מידע על תשתיות (דרכים, רכבות, גז)',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                infrastructureType: {
-                                    type: 'string',
-                                    description: 'סוג תשתית: roads, trains, gas, all',
-                                    enum: ['roads', 'trains', 'gas', 'all'],
-                                    default: 'all'
-                                },
-                                whereClause: {
-                                    type: 'string',
-                                    description: 'תנאי מתקדם לחיפוש (SQL WHERE clause)',
-                                    default: '1=1'
-                                }
-                            }
-                        }
-                    },
-                    {
-                        name: 'get_conservation_sites',
-                        description: 'חיפוש אתרי שימור והגנה',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                x: {
-                                    type: 'number',
-                                    description: 'קואורדינטת X (אופציונלי)'
-                                },
-                                y: {
-                                    type: 'number',
-                                    description: 'קואורדינטת Y (אופציונלי)'
-                                },
-                                radius: {
-                                    type: 'number',
-                                    description: 'רדיוס חיפוש במטרים',
-                                    default: 1000
-                                },
-                                conservationGrade: {
-                                    type: 'string',
-                                    description: 'דרגת שימור (א, ב, ג)'
-                                }
-                            }
-                        }
-                    },
-                    {
-                        name: 'get_comprehensive_location_data',
-                        description: 'קבלת מידע מקיף על מיקום - תכניות, הגבלות ואתרי שימור',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                x: {
-                                    type: 'number',
-                                    description: 'קואורדינטת X'
-                                },
-                                y: {
-                                    type: 'number',
-                                    description: 'קואורדינטת Y'
-                                },
-                                radius: {
-                                    type: 'number',
-                                    description: 'רדיוס חיפוש במטרים',
+                                    description: 'רדיוס חיפוש במטרים (100-2000)',
+                                    minimum: 100,
+                                    maximum: 2000,
                                     default: 500
                                 }
                             },
@@ -332,7 +207,7 @@ class IplanMCPServer {
                     },
                     {
                         name: 'check_service_status',
-                        description: 'בדיקת זמינות השירותים של מינהל התכנון',
+                        description: 'בדיקת זמינות ותקינות שירותי מינהל התכנון',
                         inputSchema: {
                             type: 'object',
                             properties: {}
@@ -342,474 +217,349 @@ class IplanMCPServer {
             };
         });
 
-        // Handle tool calls
+        // טיפול בקריאות לכלים
         this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const { name, arguments: args } = request.params;
+            
+            console.log(`🔧 Tool called: ${name}`, args);
+            
             try {
                 switch (name) {
                     case 'search_plans':
-                        return await this.searchPlans(args);
+                        return await this.searchPlans(args || {});
                     case 'get_plan_details':
                         return await this.getPlanDetails(args?.planNumber);
                     case 'search_by_location':
                         return await this.searchByLocation(args?.x, args?.y, args?.radius);
-                    case 'get_building_restrictions':
-                        return await this.getBuildingRestrictions(args?.x, args?.y, args?.buffer);
-                    case 'get_infrastructure_data':
-                        return await this.getInfrastructureData(args?.infrastructureType, args?.whereClause);
-                    case 'get_conservation_sites':
-                        return await this.getConservationSites(args);
-                    case 'get_comprehensive_location_data':
-                        return await this.getComprehensiveLocationData(args?.x, args?.y, args?.radius);
                     case 'check_service_status':
                         return await this.checkServiceStatus();
                     default:
-                        throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
+                        throw new McpError(ErrorCode.MethodNotFound, `כלי לא ידוע: ${name}`);
                 }
             } catch (error) {
+                console.error(`❌ Tool execution error (${name}):`, error);
+                
                 if (error instanceof McpError) {
                     throw error;
                 }
-                throw new McpError(ErrorCode.InternalError, `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`);
+                throw new McpError(
+                    ErrorCode.InternalError, 
+                    `שגיאה בהרצת הכלי ${name}: ${error.message}`
+                );
             }
         });
     }
 
-    buildWhereClause(params) {
-        const conditions = [];
-        
-        if (params.searchTerm) {
-            conditions.push(`(pl_name LIKE '%${params.searchTerm}%' OR pl_number LIKE '%${params.searchTerm}%')`);
-        }
-        if (params.district) {
-            conditions.push(`district_name LIKE '%${params.district}%'`);
-        }
-        if (params.planAreaName) {
-            conditions.push(`plan_area_name LIKE '%${params.planAreaName}%'`);
-        }
-        if (params.cityName) {
-            conditions.push(`jurstiction_area_name LIKE '%${params.cityName}%'`);
-        }
-        if (params.landUse) {
-            conditions.push(`pl_landuse_string LIKE '%${params.landUse}%'`);
-        }
-        if (params.minArea) {
-            conditions.push(`pl_area_dunam >= ${params.minArea}`);
-        }
-        if (params.maxArea) {
-            conditions.push(`pl_area_dunam <= ${params.maxArea}`);
-        }
-        if (params.minDate) {
-            conditions.push(`pl_date_8 >= '${params.minDate}'`);
-        }
-        if (params.maxDate) {
-            conditions.push(`pl_date_8 <= '${params.maxDate}'`);
-        }
-
-        return conditions.length > 0 ? conditions.join(' AND ') : '1=1';
-    }
-
+    // כלי חיפוש תכניות
     async searchPlans(params = {}) {
-        const whereClause = this.buildWhereClause(params);
-        const url = `${BASE_URL}/PlanningPublic/Xplan/MapServer/1/query`;
-        const searchParams = new URLSearchParams({
-            'where': whereClause,
-            'outFields': 'pl_name,pl_number,district_name,plan_area_name,pl_area_dunam,pl_date_8,pl_url,jurstiction_area_name,pl_landuse_string',
-            'f': 'json',
-            'returnGeometry': 'false',
-            'resultRecordCount': params.limit || '50'
-        });
+        try {
+            const whereClause = this.buildWhereClause(params);
+            const limit = Math.min(Math.max(params.limit || 10, 1), 20);
+            
+            const url = `${BASE_URL}/PlanningPublic/Xplan/MapServer/1/query`;
+            const searchParams = new URLSearchParams({
+                'where': whereClause,
+                'outFields': 'pl_name,pl_number,district_name,plan_area_name,pl_area_dunam,pl_date_8,jurstiction_area_name,pl_landuse_string',
+                'f': 'json',
+                'returnGeometry': 'false',
+                'resultRecordCount': limit.toString()
+            });
 
-        const response = await fetch(`${url}?${searchParams}`, {
-            method: 'GET',
-            headers: { 'Accept': 'application/json' }
-        });
+            console.log(`🔍 Searching plans: ${whereClause}`);
 
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
+            const response = await fetch(`${url}?${searchParams}`, {
+                method: 'GET',
+                headers: { 'Accept': 'application/json' },
+                timeout: 15000
+            });
 
-        const data = await response.json();
-        if (data?.error) {
-            throw new Error(`API Error: ${data.error.message}`);
-        }
+            if (!response.ok) {
+                throw new Error(`שגיאת HTTP: ${response.status}`);
+            }
 
-        const results = data?.features || [];
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: `נמצאו ${results.length} תוצאות:\n\n${JSON.stringify(results, null, 2)}`
-                }
-            ]
-        };
-    }
+            const data = await response.json();
+            
+            if (data?.error) {
+                throw new Error(`שגיאת API: ${data.error.message}`);
+            }
 
-    async getPlanDetails(planNumber) {
-        if (!planNumber) {
-            throw new McpError(ErrorCode.InvalidParams, 'Plan number is required');
-        }
+            const results = data?.features || [];
+            
+            // עיצוב התוצאות
+            const formattedResults = results.map(feature => ({
+                שם_תכנית: feature.attributes.pl_name,
+                מספר_תכנית: feature.attributes.pl_number,
+                מחוז: feature.attributes.district_name,
+                אזור_תכנית: feature.attributes.plan_area_name,
+                שטח_דונמים: feature.attributes.pl_area_dunam,
+                תאריך_אישור: feature.attributes.pl_date_8,
+                סמכות: feature.attributes.jurstiction_area_name,
+                ייעוד_קרקע: feature.attributes.pl_landuse_string
+            }));
 
-        const url = `${BASE_URL}/PlanningPublic/Xplan/MapServer/1/query`;
-        const searchParams = new URLSearchParams({
-            'where': `pl_number = '${planNumber}'`,
-            'outFields': '*',
-            'f': 'json',
-            'returnGeometry': 'true'
-        });
+            const summary = `🎯 נמצאו ${results.length} תכניות`;
+            const details = formattedResults.length > 0 ? 
+                '\n\n📋 פרטי התכניות:\n' + JSON.stringify(formattedResults, null, 2) :
+                '\n\n❌ לא נמצאו תכניות המתאימות לקריטריונים';
 
-        const response = await fetch(`${url}?${searchParams}`, {
-            method: 'GET',
-            headers: { 'Accept': 'application/json' }
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const data = await response.json();
-        if (data?.error) {
-            throw new Error(`API Error: ${data.error.message}`);
-        }
-
-        const results = data?.features || [];
-        if (results.length === 0) {
             return {
                 content: [
                     {
                         type: 'text',
-                        text: `לא נמצאה תכנית עם מספר: ${planNumber}`
+                        text: summary + details
+                    }
+                ]
+            };
+            
+        } catch (error) {
+            console.error('Search plans error:', error);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: `❌ שגיאה בחיפוש תכניות: ${error.message}`
                     }
                 ]
             };
         }
-
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: `פרטי תכנית ${planNumber}:\n\n${JSON.stringify(results[0], null, 2)}`
-                }
-            ]
-        };
     }
 
-    async searchByLocation(x, y, radius = 500) {
-        if (!x || !y) {
-            throw new McpError(ErrorCode.InvalidParams, 'X and Y coordinates are required');
+    // כלי קבלת פרטי תכנית
+    async getPlanDetails(planNumber) {
+        if (!planNumber) {
+            throw new McpError(ErrorCode.InvalidParams, 'חובה לספק מספר תכנית');
         }
 
-        const url = `${BASE_URL}/PlanningPublic/Xplan/MapServer/1/query`;
-        const searchParams = new URLSearchParams({
-            'geometry': `${x},${y}`,
-            'geometryType': 'esriGeometryPoint',
-            'distance': radius.toString(),
-            'units': 'esriSRUnit_Meter',
-            'spatialRel': 'esriSpatialRelWithin',
-            'outFields': 'pl_name,pl_number,district_name,plan_area_name,pl_area_dunam,pl_date_8,pl_url',
-            'f': 'json',
-            'returnGeometry': 'false'
-        });
-
-        const response = await fetch(`${url}?${searchParams}`, {
-            method: 'GET',
-            headers: { 'Accept': 'application/json' }
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const data = await response.json();
-        if (data?.error) {
-            throw new Error(`API Error: ${data.error.message}`);
-        }
-
-        const results = data?.features || [];
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: `נמצאו ${results.length} תכניות ברדיוס ${radius} מטר מהנקודה (${x}, ${y}):\n\n${JSON.stringify(results, null, 2)}`
-                }
-            ]
-        };
-    }
-
-    async getBuildingRestrictions(x, y, buffer = 100) {
-        if (!x || !y) {
-            throw new McpError(ErrorCode.InvalidParams, 'X and Y coordinates are required');
-        }
-
-        const url = `${BASE_URL}/PlanningPublic/Xplan/MapServer/8/query`;
-        const searchParams = new URLSearchParams({
-            'geometry': `${x},${y}`,
-            'geometryType': 'esriGeometryPoint',
-            'distance': buffer.toString(),
-            'units': 'esriSRUnit_Meter',
-            'spatialRel': 'esriSpatialRelWithin',
-            'outFields': '*',
-            'f': 'json',
-            'returnGeometry': 'true'
-        });
-
-        const response = await fetch(`${url}?${searchParams}`, {
-            method: 'GET',
-            headers: { 'Accept': 'application/json' }
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const data = await response.json();
-        if (data?.error) {
-            throw new Error(`API Error: ${data.error.message}`);
-        }
-
-        const results = data?.features || [];
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: `נמצאו ${results.length} הגבלות בנייה ברדיוס ${buffer} מטר מהנקודה (${x}, ${y}):\n\n${JSON.stringify(results, null, 2)}`
-                }
-            ]
-        };
-    }
-
-    async getInfrastructureData(infrastructureType = 'all', whereClause = '1=1') {
-        const layerMap = {
-            'roads': 12,
-            'trains': 13,
-            'gas': 14
-        };
-
-        const layers = infrastructureType === 'all' ? 
-            Object.values(layerMap) : 
-            [layerMap[infrastructureType]];
-
-        if (!layers[0] && infrastructureType !== 'all') {
-            throw new McpError(ErrorCode.InvalidParams, 'Invalid infrastructure type');
-        }
-
-        const results = [];
-        for (const layer of layers) {
-            const url = `${BASE_URL}/PlanningPublic/Xplan/MapServer/${layer}/query`;
+        try {
+            const url = `${BASE_URL}/PlanningPublic/Xplan/MapServer/1/query`;
             const searchParams = new URLSearchParams({
-                'where': whereClause,
+                'where': `pl_number = '${planNumber}'`,
                 'outFields': '*',
                 'f': 'json',
-                'returnGeometry': 'false',
-                'resultRecordCount': '20'
+                'returnGeometry': 'false'
             });
 
-            try {
-                const response = await fetch(`${url}?${searchParams}`, {
-                    method: 'GET',
-                    headers: { 'Accept': 'application/json' }
-                });
+            console.log(`📄 Getting plan details: ${planNumber}`);
 
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data?.features) {
-                        results.push({
-                            layer: layer,
-                            type: Object.keys(layerMap).find(key => layerMap[key] === layer) || 'unknown',
-                            features: data.features
-                        });
-                    }
-                }
-            } catch (error) {
-                console.error(`Error fetching layer ${layer}:`, error);
-            }
-        }
-
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: `מידע תשתיות:\n\n${JSON.stringify(results, null, 2)}`
-                }
-            ]
-        };
-    }
-
-    async getConservationSites(params = {}) {
-        const { x, y, radius = 1000, conservationGrade } = params;
-        
-        const url = `${BASE_URL}/PlanningPublic/Xplan/MapServer/10/query`;
-        const searchParams = new URLSearchParams({
-            'outFields': '*',
-            'f': 'json',
-            'returnGeometry': 'true',
-            'resultRecordCount': '50'
-        });
-
-        let whereClause = '1=1';
-        if (conservationGrade) {
-            whereClause = `conservation_grade = '${conservationGrade}'`;
-        }
-        searchParams.append('where', whereClause);
-
-        if (x && y) {
-            searchParams.append('geometry', `${x},${y}`);
-            searchParams.append('geometryType', 'esriGeometryPoint');
-            searchParams.append('distance', radius.toString());
-            searchParams.append('units', 'esriSRUnit_Meter');
-            searchParams.append('spatialRel', 'esriSpatialRelWithin');
-        }
-
-        const response = await fetch(`${url}?${searchParams}`, {
-            method: 'GET',
-            headers: { 'Accept': 'application/json' }
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const data = await response.json();
-        if (data?.error) {
-            throw new Error(`API Error: ${data.error.message}`);
-        }
-
-        const results = data?.features || [];
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: `נמצאו ${results.length} אתרי שימור והגנה:\n\n${JSON.stringify(results, null, 2)}`
-                }
-            ]
-        };
-    }
-
-    async getComprehensiveLocationData(x, y, radius = 500) {
-        if (!x || !y) {
-            throw new McpError(ErrorCode.InvalidParams, 'X and Y coordinates are required');
-        }
-
-        const results = {
-            location: { x, y, radius },
-            plans: [],
-            restrictions: [],
-            conservation: []
-        };
-
-        try {
-            // Get plans
-            const plansResponse = await this.searchByLocation(x, y, radius);
-            results.plans = JSON.parse(plansResponse.content[0].text.split(':\n\n')[1]);
-        } catch (error) {
-            results.plans_error = error.message;
-        }
-
-        try {
-            // Get building restrictions
-            const restrictionsResponse = await this.getBuildingRestrictions(x, y, radius);
-            results.restrictions = JSON.parse(restrictionsResponse.content[0].text.split(':\n\n')[1]);
-        } catch (error) {
-            results.restrictions_error = error.message;
-        }
-
-        try {
-            // Get conservation sites
-            const conservationResponse = await this.getConservationSites({ x, y, radius });
-            results.conservation = JSON.parse(conservationResponse.content[0].text.split(':\n\n')[1]);
-        } catch (error) {
-            results.conservation_error = error.message;
-        }
-
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: `מידע מקיף על מיקום (${x}, ${y}):\n\n${JSON.stringify(results, null, 2)}`
-                }
-            ]
-        };
-    }
-
-    async checkServiceStatus() {
-        const testUrl = `${BASE_URL}/PlanningPublic/Xplan/MapServer?f=json`;
-        
-        try {
-            const response = await fetch(testUrl, {
+            const response = await fetch(`${url}?${searchParams}`, {
                 method: 'GET',
                 headers: { 'Accept': 'application/json' },
-                timeout: 5000
+                timeout: 15000
             });
 
+            if (!response.ok) {
+                throw new Error(`שגיאת HTTP: ${response.status}`);
+            }
+
             const data = await response.json();
+            
+            if (data?.error) {
+                throw new Error(`שגיאת API: ${data.error.message}`);
+            }
+
+            const results = data?.features || [];
+            
+            if (results.length === 0) {
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: `❌ לא נמצאה תכנית עם מספר: ${planNumber}`
+                        }
+                    ]
+                };
+            }
+
+            const planDetails = results[0].attributes;
             
             return {
                 content: [
                     {
                         type: 'text',
-                        text: `סטטוס שירותי מינהל התכנון: ${response.ok ? 'זמין' : 'לא זמין'}\n\nפרטים:\n${JSON.stringify(data, null, 2)}`
+                        text: `📄 פרטי תכנית ${planNumber}:\n\n${JSON.stringify(planDetails, null, 2)}`
                     }
                 ]
             };
+            
         } catch (error) {
+            console.error('Get plan details error:', error);
             return {
                 content: [
                     {
                         type: 'text',
-                        text: `שגיאה בבדיקת סטטוס השירות: ${error.message}`
+                        text: `❌ שגיאה בקבלת פרטי תכנית: ${error.message}`
                     }
                 ]
             };
         }
     }
 
-    async runStdio() {
-        // Run as stdio server (for CLI usage)
-        const transport = new StdioServerTransport();
-        await this.server.connect(transport);
-        console.error('Iplan MCP Server running on stdio');
+    // כלי חיפוש לפי מיקום
+    async searchByLocation(x, y, radius = 500) {
+        if (!x || !y) {
+            throw new McpError(ErrorCode.InvalidParams, 'חובה לספק קואורדינטות X ו-Y');
+        }
+
+        try {
+            const url = `${BASE_URL}/PlanningPublic/Xplan/MapServer/1/query`;
+            const searchParams = new URLSearchParams({
+                'geometry': `${x},${y}`,
+                'geometryType': 'esriGeometryPoint',
+                'distance': radius.toString(),
+                'units': 'esriSRUnit_Meter',
+                'spatialRel': 'esriSpatialRelWithin',
+                'outFields': 'pl_name,pl_number,district_name,plan_area_name,pl_area_dunam',
+                'f': 'json',
+                'returnGeometry': 'false',
+                'resultRecordCount': '10'
+            });
+
+            console.log(`📍 Searching by location: (${x}, ${y}) radius: ${radius}m`);
+
+            const response = await fetch(`${url}?${searchParams}`, {
+                method: 'GET',
+                headers: { 'Accept': 'application/json' },
+                timeout: 15000
+            });
+
+            if (!response.ok) {
+                throw new Error(`שגיאת HTTP: ${response.status}`);
+            }
+
+            const data = await response.json();
+            
+            if (data?.error) {
+                throw new Error(`שגיאת API: ${data.error.message}`);
+            }
+
+            const results = data?.features || [];
+            
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: `📍 נמצאו ${results.length} תכניות ברדיוס ${radius} מטר מהנקודה (${x}, ${y}):\n\n${JSON.stringify(results.map(f => f.attributes), null, 2)}`
+                    }
+                ]
+            };
+            
+        } catch (error) {
+            console.error('Search by location error:', error);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: `❌ שגיאה בחיפוש לפי מיקום: ${error.message}`
+                    }
+                ]
+            };
+        }
     }
 
+    // בדיקת סטטוס השירות
+    async checkServiceStatus() {
+        try {
+            const testUrl = `${BASE_URL}/PlanningPublic/Xplan/MapServer?f=json`;
+            
+            console.log('🔍 Checking service status...');
+            
+            const response = await fetch(testUrl, {
+                method: 'GET',
+                headers: { 'Accept': 'application/json' },
+                timeout: 10000
+            });
+
+            const data = await response.json();
+            
+            const statusInfo = {
+                זמינות: response.ok ? '✅ זמין' : '❌ לא זמין',
+                שם_שירות: data.mapName || 'לא ידוע',
+                גרסה: data.currentVersion || 'לא ידוע',
+                שכבות_זמינות: data.layers?.length || 0,
+                תאריך_בדיקה: new Date().toLocaleString('he-IL')
+            };
+            
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: `🔍 סטטוס שירותי מינהל התכנון:\n\n${JSON.stringify(statusInfo, null, 2)}`
+                    }
+                ]
+            };
+            
+        } catch (error) {
+            console.error('Service status check error:', error);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: `❌ שגיאה בבדיקת סטטוס השירות: ${error.message}`
+                    }
+                ]
+            };
+        }
+    }
+
+    // בניית WHERE clause
+    buildWhereClause(params = {}) {
+        const conditions = [];
+        
+        if (params.searchTerm) {
+            conditions.push(`(pl_name LIKE '%${params.searchTerm}%' OR pl_number LIKE '%${params.searchTerm}%')`);
+        }
+        
+        if (params.district) {
+            conditions.push(`district_name LIKE '%${params.district}%'`);
+        }
+
+        return conditions.length > 0 ? conditions.join(' AND ') : '1=1';
+    }
+
+    // הרצה במצב stdio
+    async runStdio() {
+        const transport = new StdioServerTransport();
+        await this.server.connect(transport);
+        console.error('🚀 Iplan MCP Server running on stdio');
+    }
+
+    // הרצה במצב HTTP
     async runHTTP(port = 3000, host = '0.0.0.0') {
-        // Run as HTTP server with SSE support (for n8n)
         this.httpServer = this.app.listen(port, host, () => {
-            console.log(`🚀 Iplan MCP Server running on http://${host}:${port}`);
-            console.log(`📊 Health check: http://${host}:${port}/`);
-            console.log(`🔗 SSE endpoint for n8n: http://${host}:${port}/sse`);
-            console.log(`ℹ️  Server info: http://${host}:${port}/info`);
+            console.log('🎉════════════════════════════════════════════════════════');
+            console.log(`🚀 Iplan MCP Server is RUNNING!`);
+            console.log(`📡 Address: http://${host}:${port}`);
+            console.log(`🔗 MCP SSE Endpoint: http://${host}:${port}/sse`);
+            console.log(`🧪 Test Endpoint: http://${host}:${port}/test`);
+            console.log(`🛠️  Available Tools: 4`);
+            console.log('🎉════════════════════════════════════════════════════════');
         });
 
         // Graceful shutdown
-        process.on('SIGTERM', () => {
-            console.log('Received SIGTERM, shutting down gracefully...');
+        const shutdown = () => {
+            console.log('⏹️  Shutting down gracefully...');
             this.httpServer?.close(() => {
-                console.log('HTTP server closed.');
+                console.log('✅ HTTP server closed.');
                 process.exit(0);
             });
-        });
+        };
 
-        process.on('SIGINT', () => {
-            console.log('Received SIGINT, shutting down gracefully...');
-            this.httpServer?.close(() => {
-                console.log('HTTP server closed.');
-                process.exit(0);
-            });
-        });
+        process.on('SIGTERM', shutdown);
+        process.on('SIGINT', shutdown);
 
         return this.httpServer;
     }
 }
 
-// Command line interface
+// ========== MAIN EXECUTION ==========
 async function main() {
     const server = new IplanMCPServer();
     
-    // Check command line arguments
     const args = process.argv.slice(2);
     const mode = args[0] || 'stdio';
     
     if (mode === 'http' || mode === 'sse') {
-        const port = parseInt(args[1]) || 3000;
+        const port = parseInt(args[1]) || process.env.PORT || 3000;
         const host = args[2] || '0.0.0.0';
         await server.runHTTP(port, host);
     } else {
@@ -817,29 +567,30 @@ async function main() {
     }
 }
 
-// Export for module usage
 export { IplanMCPServer };
 
-// Run if called directly
 if (import.meta.url === `file://${process.argv[1]}`) {
     main().catch(console.error);
 }
 
 /*
-Usage Examples:
+📋 הוראות השימוש:
 
-1. For CLI/stdio usage:
-   node server.js
+1. התקנת dependencies:
+   npm install @modelcontextprotocol/sdk express cors node-fetch
 
-2. For n8n SSE usage:
+2. הרצה מקומית:
    node server.js http 3000
-   
-   Then in n8n MCP Client Tool:
-   SSE Endpoint: http://localhost:3000/sse
 
-3. For custom port/host:
-   node server.js http 3001 localhost
+3. שימוש ב-N8N:
+   MCP Client Tool -> SSE Endpoint: http://localhost:3000/sse
 
-Dependencies needed:
-npm install @modelcontextprotocol/sdk express cors node-fetch
+4. בדיקת תקינות:
+   curl http://localhost:3000/test
+
+5. כלים זמינים:
+   - search_plans: חיפוש תכניות
+   - get_plan_details: פרטי תכנית ספציפית  
+   - search_by_location: חיפוש לפי קואורדינטות
+   - check_service_status: בדיקת זמינות השירות
 */
