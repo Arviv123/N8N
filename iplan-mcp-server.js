@@ -95,18 +95,13 @@ class IplanMCPServer {
 
         // SSE endpoint for n8n MCP Client Tool
         this.app.use('/sse', (req, res, next) => {
-            // Set proper SSE headers
-            res.writeHead(200, {
-                'Content-Type': 'text/event-stream',
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive',
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
-                'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
-            });
-
             // Handle preflight requests
             if (req.method === 'OPTIONS') {
+                res.writeHead(200, {
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
+                    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+                });
                 res.end();
                 return;
             }
@@ -114,15 +109,14 @@ class IplanMCPServer {
             console.log('New SSE connection established');
             
             try {
+                // Let SSEServerTransport handle all headers
                 const transport = new SSEServerTransport('', res);
                 
                 // Connect the MCP server to the SSE transport
-                this.server.connect(transport).catch(error => {
+                this.server.connect(transport).then(() => {
+                    console.log('SSE connection successful');
+                }).catch(error => {
                     console.error('SSE connection error:', error);
-                    if (!res.headersSent) {
-                        res.writeHead(500, {'Content-Type': 'text/plain'});
-                        res.end('Connection failed');
-                    }
                 });
 
                 // Handle client disconnect
