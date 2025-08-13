@@ -33,11 +33,19 @@ class IplanMCPServer {
     setupExpressApp() {
         this.app = express();
         
-        // CORS - להתאימות טובה יותר
+        // CORS מתקדם - תיקוני MCP Inspector
+        this.app.use((req, res, next) => {
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
+            res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Cache-Control, X-API-Key');
+            res.setHeader('Cache-Control', 'no-cache');
+            next();
+        });
+        
         this.app.use(cors({
             origin: '*',
-            methods: ['GET', 'POST', 'OPTIONS'],
-            allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Cache-Control'],
+            methods: ['GET', 'POST', 'OPTIONS', 'HEAD'],
+            allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Cache-Control', 'X-API-Key'],
             credentials: false
         }));
         
@@ -86,64 +94,54 @@ class IplanMCPServer {
             }
         });
 
-        // **נקודת ה-SSE הנכונה - זה הלב של MCP**
-        this.app.all('/sse', async (req, res, next) => {
+        // **נקודת ה-SSE המתקדמת - תיקוני MCP Inspector**
+        this.app.all('/sse', async (req, res) => {
             console.log(`📡 SSE request: ${req.method} ${req.url}`);
-            
-            // Handle preflight OPTIONS
-            if (req.method === 'OPTIONS') {
-                res.setHeader('Access-Control-Allow-Origin', '*');
-                res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
-                res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Cache-Control');
-                return res.end();
-            }
-            
-            // Health check של ה-Inspector – אל תפתח SSE על HEAD
-            if (req.method === 'HEAD') {
-                res.setHeader('Access-Control-Allow-Origin', '*');
+
+            // CORS בסיסי ל-SSE (עוד שכבה)
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
+            res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Cache-Control, X-API-Key');
+            res.setHeader('Cache-Control', 'no-cache');
+
+            // Preflight/Health checks של הדפדפן/Inspector
+            if (req.method === 'OPTIONS' || req.method === 'HEAD') {
                 return res.status(200).end();
             }
-            
+
             try {
                 console.log('🔗 Creating SSE Transport...');
-                
-                // יצירת SSE Transport עם req object במקום string ריק
+                // חשוב: להעביר req, לא מחרוזת
                 const transport = new SSEServerTransport(req, res);
-                
+
                 console.log('🚀 Connecting MCP Server...');
-                
-                // חיבור מיידי וחכמה לטיפול בשגיאות
                 await this.server.connect(transport);
                 console.log('✅ MCP Server connected successfully via SSE');
 
-                // Keep-alive heartbeat ל-Render (כל 15 שניות)
-                const heartbeat = setInterval(() => {
-                    if (!res.headersSent && !res.destroyed) {
-                        res.write(': heartbeat\n\n');
-                    } else {
-                        clearInterval(heartbeat);
-                    }
+                // שומר את החיבור "חי" מול פרוקסי/CDN
+                try { res.setHeader('X-Accel-Buffering', 'no'); } catch {}
+                const hb = setInterval(() => {
+                    try { 
+                        if (!res.destroyed && res.writable) {
+                            res.write(`: ping ${Date.now()}\n\n`); 
+                        }
+                    } catch {}
                 }, 15000);
 
-                // Event handlers לניהול החיבור
                 req.on('close', () => {
+                    clearInterval(hb);
                     console.log('🔌 SSE client disconnected');
-                    clearInterval(heartbeat);
                 });
 
-                req.on('error', (error) => {
-                    console.error('⚠️ SSE request error:', error);
-                    clearInterval(heartbeat);
+                req.on('error', (err) => {
+                    clearInterval(hb);
+                    console.error('⚠️ SSE request error:', err);
                 });
-                
+
             } catch (error) {
                 console.error('💥 SSE setup error:', error);
                 if (!res.headersSent) {
-                    res.status(500).json({
-                        error: 'SSE setup failed',
-                        message: error.message,
-                        details: error.stack
-                    });
+                    res.status(500).json({ error: 'SSE setup failed', message: error.message });
                 }
             }
         });
@@ -558,6 +556,14 @@ class IplanMCPServer {
             console.log(`🛠️  Available Tools: 4`);
             console.log('🎉════════════════════════════════════════════════════════');
         });
+
+        // Timeouts ברמת ה־HTTP server לייצוב חיבור
+        this.httpServer.keepAliveTimeout = 75_000;
+        this.httpServer.headersTimeout = 80_000;
+        // מניעת timeout על בקשות ארוכות (SSE)
+        if (this.httpServer.requestTimeout !== undefined) {
+            this.httpServer.requestTimeout = 0;
+        }
 
         // Graceful shutdown
         const shutdown = () => {

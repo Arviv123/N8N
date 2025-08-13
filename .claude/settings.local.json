@@ -6,7 +6,9 @@
       "Bash(git remote add:*)",
       "Bash(git branch:*)",
       "Bash(git push:*)",
-      "Bash(dir)"
+      "Bash(dir)",
+      "Bash(npx:*)",
+      "Bash(curl:*)"
     ],
     "deny": []
   }
