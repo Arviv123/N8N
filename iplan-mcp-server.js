@@ -92,8 +92,8 @@ class IplanMCPServer {
             
             // הטמעת SSE Transport נכונה
             try {
-                // יצירת SSE Transport עם Response object
-                const transport = new SSEServerTransport('/sse', res);
+                // יצירת SSE Transport בלי path parameter
+                const transport = new SSEServerTransport('', res);
                 
                 // חיבור שרת MCP ל-Transport
                 this.server.connect(transport).then(() => {
