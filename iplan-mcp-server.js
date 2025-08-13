@@ -93,17 +93,22 @@ class IplanMCPServer {
             // Handle preflight OPTIONS
             if (req.method === 'OPTIONS') {
                 res.setHeader('Access-Control-Allow-Origin', '*');
-                res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+                res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
                 res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Cache-Control');
-                res.end();
-                return;
+                return res.end();
+            }
+            
+            // Health check של ה-Inspector – אל תפתח SSE על HEAD
+            if (req.method === 'HEAD') {
+                res.setHeader('Access-Control-Allow-Origin', '*');
+                return res.status(200).end();
             }
             
             try {
                 console.log('🔗 Creating SSE Transport...');
                 
-                // יצירת SSE Transport
-                const transport = new SSEServerTransport('', res);
+                // יצירת SSE Transport עם req object במקום string ריק
+                const transport = new SSEServerTransport(req, res);
                 
                 console.log('🚀 Connecting MCP Server...');
                 
@@ -111,13 +116,24 @@ class IplanMCPServer {
                 await this.server.connect(transport);
                 console.log('✅ MCP Server connected successfully via SSE');
 
+                // Keep-alive heartbeat ל-Render (כל 15 שניות)
+                const heartbeat = setInterval(() => {
+                    if (!res.headersSent && !res.destroyed) {
+                        res.write(': heartbeat\n\n');
+                    } else {
+                        clearInterval(heartbeat);
+                    }
+                }, 15000);
+
                 // Event handlers לניהול החיבור
                 req.on('close', () => {
                     console.log('🔌 SSE client disconnected');
+                    clearInterval(heartbeat);
                 });
 
                 req.on('error', (error) => {
                     console.error('⚠️ SSE request error:', error);
+                    clearInterval(heartbeat);
                 });
                 
             } catch (error) {
