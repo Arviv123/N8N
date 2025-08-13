@@ -146,6 +146,104 @@ class IplanMCPServer {
             }
         });
 
+        // **REST API endpoints לעבודה ללא SSE**
+        this.app.get('/api/health', (req, res) => {
+            res.json({ 
+                ok: true, 
+                server: 'Iplan MCP Server',
+                time: new Date().toISOString(),
+                available_tools: ['search_plans', 'get_plan_details', 'search_by_location', 'check_service_status']
+            });
+        });
+
+        // MCP tools כ-REST endpoints
+        this.app.post('/api/tools/:toolName', async (req, res) => {
+            try {
+                const { toolName } = req.params;
+                const args = req.body || {};
+                
+                console.log(`🔧 REST Tool called: ${toolName}`, args);
+                
+                let result;
+                switch (toolName) {
+                    case 'search_plans':
+                        result = await this.searchPlans(args);
+                        break;
+                    case 'get_plan_details':
+                        result = await this.getPlanDetails(args.planNumber);
+                        break;
+                    case 'search_by_location':
+                        result = await this.searchByLocation(args.x, args.y, args.radius);
+                        break;
+                    case 'check_service_status':
+                        result = await this.checkServiceStatus();
+                        break;
+                    default:
+                        return res.status(404).json({ error: `Unknown tool: ${toolName}` });
+                }
+                
+                res.json({
+                    success: true,
+                    tool: toolName,
+                    result: result
+                });
+                
+            } catch (error) {
+                console.error(`❌ REST tool error (${req.params.toolName}):`, error);
+                res.status(500).json({
+                    success: false,
+                    error: 'Tool execution failed',
+                    message: error.message
+                });
+            }
+        });
+
+        // רשימת כלים זמינים
+        this.app.get('/api/tools', (req, res) => {
+            res.json({
+                tools: [
+                    {
+                        name: 'search_plans',
+                        description: 'חיפוש תכניות במינהל התכנון הישראלי עם פילטרים',
+                        method: 'POST',
+                        endpoint: '/api/tools/search_plans',
+                        parameters: {
+                            searchTerm: 'string (optional)',
+                            district: 'string (optional)', 
+                            limit: 'number (1-20, default: 10)'
+                        }
+                    },
+                    {
+                        name: 'get_plan_details',
+                        description: 'קבלת פרטים מלאים על תכנית ספציפית לפי מספר תכנית',
+                        method: 'POST',
+                        endpoint: '/api/tools/get_plan_details',
+                        parameters: {
+                            planNumber: 'string (required)'
+                        }
+                    },
+                    {
+                        name: 'search_by_location',
+                        description: 'חיפוש תכניות לפי קואורדינטות גיאוגרפיות',
+                        method: 'POST',
+                        endpoint: '/api/tools/search_by_location',
+                        parameters: {
+                            x: 'number (required)',
+                            y: 'number (required)',
+                            radius: 'number (100-2000, default: 500)'
+                        }
+                    },
+                    {
+                        name: 'check_service_status',
+                        description: 'בדיקת זמינות ותקינות שירותי מינהל התכנון',
+                        method: 'POST',
+                        endpoint: '/api/tools/check_service_status',
+                        parameters: {}
+                    }
+                ]
+            });
+        });
+
         // Error handler
         this.app.use((error, req, res, next) => {
             console.error('Express error:', error);
