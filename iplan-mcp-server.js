@@ -87,20 +87,29 @@ class IplanMCPServer {
         });
 
         // **נקודת ה-SSE הנכונה - זה הלב של MCP**
-        this.app.use('/sse', (req, res, next) => {
-            console.log(`SSE request: ${req.method} ${req.url}`);
+        this.app.all('/sse', async (req, res, next) => {
+            console.log(`📡 SSE request: ${req.method} ${req.url}`);
             
-            // הטמעת SSE Transport נכונה
+            // Handle preflight OPTIONS
+            if (req.method === 'OPTIONS') {
+                res.setHeader('Access-Control-Allow-Origin', '*');
+                res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+                res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Cache-Control');
+                res.end();
+                return;
+            }
+            
             try {
-                // יצירת SSE Transport בלי path parameter
+                console.log('🔗 Creating SSE Transport...');
+                
+                // יצירת SSE Transport
                 const transport = new SSEServerTransport('', res);
                 
-                // חיבור שרת MCP ל-Transport
-                this.server.connect(transport).then(() => {
-                    console.log('✅ MCP Server connected successfully via SSE');
-                }).catch(error => {
-                    console.error('❌ MCP Server connection failed:', error);
-                });
+                console.log('🚀 Connecting MCP Server...');
+                
+                // חיבור מיידי וחכמה לטיפול בשגיאות
+                await this.server.connect(transport);
+                console.log('✅ MCP Server connected successfully via SSE');
 
                 // Event handlers לניהול החיבור
                 req.on('close', () => {
@@ -110,15 +119,14 @@ class IplanMCPServer {
                 req.on('error', (error) => {
                     console.error('⚠️ SSE request error:', error);
                 });
-
-                // SSE Transport יטפל בכל השאר
                 
             } catch (error) {
                 console.error('💥 SSE setup error:', error);
                 if (!res.headersSent) {
                     res.status(500).json({
                         error: 'SSE setup failed',
-                        message: error.message
+                        message: error.message,
+                        details: error.stack
                     });
                 }
             }
